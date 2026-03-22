@@ -11,9 +11,17 @@ import ReactFlow, {
   type Node,
 } from "reactflow";
 import "reactflow/dist/style.css";
-import { Check, Plus, Search, Sparkles, Upload, X } from "lucide-react";
-import { words } from "@/data/cet4_core";
-import type { Topic, WordItem } from "@/types/word";
+import {
+  Check,
+  Plus,
+  Search,
+  Sparkles,
+  Upload,
+  Volume2,
+  X,
+} from "lucide-react";
+import { seedRelations, words } from "@/data/cet4_core";
+import type { Topic, WordItem, WordRelation } from "@/types/word";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -46,12 +54,13 @@ type UserList = {
 
 type StoredState = {
   customWords: WordItem[];
+  customRelations: WordRelation[];
   lists: UserList[];
   activeListId: string;
   statuses: Record<string, MemoryStatus>;
 };
 
-const STORAGE_KEY = "nexora-phase1-state";
+const STORAGE_KEY = "nexora-phase2-state";
 const defaultListId = "my-core-list";
 const defaultLists: UserList[] = [
   {
@@ -101,9 +110,11 @@ function createWordId(word: string, existingIds: Set<string>) {
 
 function scoreRelation(source: WordItem, target: WordItem) {
   let score = 0;
+  let relationType: WordRelation["type"] = "semantic";
 
   if (source.topic === target.topic) {
     score += 3;
+    relationType = "topic";
   }
 
   const sourceMeanings = new Set(source.meanings.map(normalizeToken));
@@ -112,44 +123,46 @@ function scoreRelation(source: WordItem, target: WordItem) {
   for (const meaning of sourceMeanings) {
     if (targetMeanings.has(meaning)) {
       score += 4;
+      relationType = "semantic";
     }
-  }
-
-  if (source.related.includes(target.id) || target.related.includes(source.id)) {
-    score += 5;
   }
 
   if (source.opposite?.includes(target.id) || target.opposite?.includes(source.id)) {
     score += 5;
+    relationType = "opposite";
   }
 
   if (source.word[0] && target.word[0] && source.word[0] === target.word[0]) {
     score += 1;
   }
 
-  return score;
-}
-
-function connectImportedWord(newWord: WordItem, candidates: WordItem[]) {
-  const suggestions = candidates
-    .filter((item) => item.id !== newWord.id)
-    .map((item) => ({ id: item.id, score: scoreRelation(newWord, item) }))
-    .filter((item) => item.score >= 4)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 4)
-    .map((item) => item.id);
-
   return {
-    ...newWord,
-    related: Array.from(new Set([...newWord.related, ...suggestions])),
+    score,
+    relationType,
   };
 }
 
-function parseImportedWords(
-  rawText: string,
-  existingWords: WordItem[],
-  listId: string,
-) {
+function createAutoRelations(newWord: WordItem, candidates: WordItem[]) {
+  return candidates
+    .filter((item) => item.id !== newWord.id)
+    .map((item) => ({
+      targetWordId: item.id,
+      ...scoreRelation(newWord, item),
+    }))
+    .filter((item) => item.score >= 4)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 4)
+    .map((item) => ({
+      id: `${newWord.id}-${item.targetWordId}-auto`,
+      sourceWordId: newWord.id,
+      targetWordId: item.targetWordId,
+      type: item.relationType === "opposite" ? "opposite" : "imported",
+      strength: Math.min(0.99, item.score / 10),
+      source: "auto" as const,
+    }));
+}
+
+function parseImportedWords(rawText: string, existingWords: WordItem[], listId: string) {
   const lines = rawText
     .split("\n")
     .map((line) => line.trim())
@@ -157,11 +170,11 @@ function parseImportedWords(
 
   const existingIds = new Set(existingWords.map((item) => item.id));
   const nextWords: WordItem[] = [];
+  const nextRelations: WordRelation[] = [];
 
   lines.forEach((line, index) => {
-    const [wordPart, meaningsPart, topicPart, examplePart, hintPart] = line
-      .split("|")
-      .map((part) => part.trim());
+    const [wordPart, meaningsPart, topicPart, examplePart, hintPart, phoneticPart] =
+      line.split("|").map((part) => part.trim());
 
     if (!wordPart || !meaningsPart) {
       return;
@@ -173,6 +186,7 @@ function parseImportedWords(
     const draft: WordItem = {
       id,
       word: wordPart,
+      phonetic: phoneticPart || undefined,
       meanings: meaningsPart
         .split(/[;,，、]/)
         .map((item) => item.trim())
@@ -186,11 +200,16 @@ function parseImportedWords(
       y: 120 + Math.floor(index / 3) * 140,
     };
 
-    const connected = connectImportedWord(draft, [...existingWords, ...nextWords]);
-    nextWords.push(connected);
+    nextWords.push(draft);
+    nextRelations.push(
+      ...createAutoRelations(draft, [...existingWords, ...nextWords.slice(0, -1)]),
+    );
   });
 
-  return nextWords;
+  return {
+    words: nextWords,
+    relations: nextRelations,
+  };
 }
 
 function readStoredState(): StoredState | null {
@@ -210,28 +229,51 @@ function readStoredState(): StoredState | null {
   }
 }
 
-function buildEdges(items: WordItem[]): Edge[] {
+function buildRelationEdges(items: WordItem[], relations: WordRelation[]): Edge[] {
   const ids = new Set(items.map((item) => item.id));
 
-  return items.flatMap((item) =>
-    item.related
-      .filter((target) => ids.has(target))
-      .map((target) => ({
-        id: `${item.id}-${target}`,
-        source: item.id,
-        target,
-        animated: item.opposite?.includes(target),
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          width: 18,
-          height: 18,
-        },
-        style: {
-          stroke: item.opposite?.includes(target) ? "#dc2626" : "#b45309",
-          strokeWidth: item.opposite?.includes(target) ? 1.6 : 1.2,
-        },
-      })),
-  );
+  return relations
+    .filter(
+      (relation) =>
+        ids.has(relation.sourceWordId) && ids.has(relation.targetWordId),
+    )
+    .map((relation) => ({
+      id: relation.id,
+      source: relation.sourceWordId,
+      target: relation.targetWordId,
+      animated: relation.type === "opposite",
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        width: 18,
+        height: 18,
+      },
+      label: `${relation.type} ${Math.round(relation.strength * 100)}%`,
+      labelStyle: {
+        fill: "#78716c",
+        fontSize: 10,
+      },
+      style: {
+        stroke:
+          relation.type === "opposite"
+            ? "#dc2626"
+            : relation.type === "topic"
+              ? "#2563eb"
+              : "#b45309",
+        strokeWidth: 1 + relation.strength,
+      },
+    }));
+}
+
+function speakWord(word: WordItem) {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(word.word);
+  utterance.lang = "en-US";
+  utterance.rate = 0.9;
+  window.speechSynthesis.speak(utterance);
 }
 
 export default function WordSpacePrototype() {
@@ -239,8 +281,11 @@ export default function WordSpacePrototype() {
   const [customWords, setCustomWords] = useState<WordItem[]>(
     () => storedState?.customWords ?? [],
   );
+  const [customRelations, setCustomRelations] = useState<WordRelation[]>(
+    () => storedState?.customRelations ?? [],
+  );
   const [userLists, setUserLists] = useState<UserList[]>(
-    () => storedState?.lists?.length ? storedState.lists : defaultLists,
+    () => (storedState?.lists?.length ? storedState.lists : defaultLists),
   );
   const [activeListId, setActiveListId] = useState(
     () => storedState?.activeListId ?? defaultListId,
@@ -259,15 +304,20 @@ export default function WordSpacePrototype() {
   useEffect(() => {
     const payload: StoredState = {
       customWords,
+      customRelations,
       lists: userLists,
       activeListId,
       statuses: memoryStatusMap,
     };
 
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [activeListId, customWords, memoryStatusMap, userLists]);
+  }, [activeListId, customRelations, customWords, memoryStatusMap, userLists]);
 
   const allWords = useMemo(() => [...words, ...customWords], [customWords]);
+  const allRelations = useMemo(
+    () => [...seedRelations, ...customRelations],
+    [customRelations],
+  );
 
   const activeList =
     userLists.find((item) => item.id === activeListId) ??
@@ -277,10 +327,25 @@ export default function WordSpacePrototype() {
       wordIds: words.map((item) => item.id),
     };
 
-  const activeListWords = useMemo(() => {
-    const ids = new Set(activeList.wordIds);
-    return allWords.filter((item) => ids.has(item.id));
-  }, [activeList.wordIds, allWords]);
+  const activeListWordIds = useMemo(
+    () => new Set(activeList.wordIds),
+    [activeList.wordIds],
+  );
+
+  const activeListWords = useMemo(
+    () => allWords.filter((item) => activeListWordIds.has(item.id)),
+    [activeListWordIds, allWords],
+  );
+
+  const activeListRelations = useMemo(
+    () =>
+      allRelations.filter(
+        (relation) =>
+          activeListWordIds.has(relation.sourceWordId) &&
+          activeListWordIds.has(relation.targetWordId),
+      ),
+    [activeListWordIds, allRelations],
+  );
 
   const filteredWords = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -298,10 +363,9 @@ export default function WordSpacePrototype() {
 
   const libraryMatches = useMemo(() => {
     const keyword = libraryQuery.trim().toLowerCase();
-    const activeIds = new Set(activeList.wordIds);
 
     return words.filter((item) => {
-      if (activeIds.has(item.id)) {
+      if (activeListWordIds.has(item.id)) {
         return false;
       }
 
@@ -314,7 +378,22 @@ export default function WordSpacePrototype() {
         item.meanings.some((meaning) => meaning.includes(keyword))
       );
     });
-  }, [activeList.wordIds, libraryQuery]);
+  }, [activeListWordIds, libraryQuery]);
+
+  const visibleWordIds = useMemo(
+    () => new Set(filteredWords.map((item) => item.id)),
+    [filteredWords],
+  );
+
+  const visibleRelations = useMemo(
+    () =>
+      activeListRelations.filter(
+        (relation) =>
+          visibleWordIds.has(relation.sourceWordId) &&
+          visibleWordIds.has(relation.targetWordId),
+      ),
+    [activeListRelations, visibleWordIds],
+  );
 
   const nodes: Node[] = useMemo(
     () =>
@@ -326,9 +405,25 @@ export default function WordSpacePrototype() {
             <button
               type="button"
               onClick={() => setSelectedWordId(item.id)}
-              className="min-w-[140px] rounded-2xl border border-white/70 bg-white/90 px-4 py-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+              className="min-w-[150px] rounded-2xl border border-white/70 bg-white/90 px-4 py-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
             >
-              <div className="text-sm font-semibold text-stone-900">{item.word}</div>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-stone-900">{item.word}</div>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    speakWord(item);
+                  }}
+                  className="rounded-full border border-stone-200 p-1 text-stone-500 transition hover:bg-stone-100"
+                  aria-label={`Speak ${item.word}`}
+                >
+                  <Volume2 className="size-3.5" />
+                </button>
+              </div>
+              {item.phonetic ? (
+                <div className="mt-1 text-[11px] text-stone-400">{item.phonetic}</div>
+              ) : null}
               <div className="mt-1 text-xs text-stone-500">
                 {item.meanings.join(" / ")}
               </div>
@@ -342,19 +437,50 @@ export default function WordSpacePrototype() {
         style: {
           background: "transparent",
           border: "none",
-          width: 160,
+          width: 170,
         },
       })),
     [filteredWords],
   );
 
-  const edges = useMemo(() => buildEdges(filteredWords), [filteredWords]);
+  const edges = useMemo(
+    () => buildRelationEdges(filteredWords, visibleRelations),
+    [filteredWords, visibleRelations],
+  );
 
   const selectedWord =
     filteredWords.find((item) => item.id === selectedWordId) ??
     activeListWords.find((item) => item.id === selectedWordId) ??
     filteredWords[0] ??
     activeListWords[0];
+
+  const selectedRelations = useMemo(() => {
+    if (!selectedWord) {
+      return [];
+    }
+
+    return activeListRelations.filter(
+      (relation) =>
+        relation.sourceWordId === selectedWord.id ||
+        relation.targetWordId === selectedWord.id,
+    );
+  }, [activeListRelations, selectedWord]);
+
+  const relatedWordItems = useMemo(() => {
+    if (!selectedWord) {
+      return [];
+    }
+
+    return selectedRelations
+      .map((relation) => {
+        const otherId =
+          relation.sourceWordId === selectedWord.id
+            ? relation.targetWordId
+            : relation.sourceWordId;
+        return allWords.find((item) => item.id === otherId);
+      })
+      .filter((item): item is WordItem => Boolean(item));
+  }, [allWords, selectedRelations, selectedWord]);
 
   const rememberedCount = activeList.wordIds.filter(
     (id) => memoryStatusMap[id] === "remembered",
@@ -404,14 +530,15 @@ export default function WordSpacePrototype() {
 
   function importCustomWords() {
     const parsed = parseImportedWords(importText, allWords, activeListId);
-    if (parsed.length === 0) {
+    if (parsed.words.length === 0) {
       return;
     }
 
-    setCustomWords((current) => [...current, ...parsed]);
-    addWordsToList(parsed.map((item) => item.id));
-    if (!selectedWordId && parsed[0]) {
-      setSelectedWordId(parsed[0].id);
+    setCustomWords((current) => [...current, ...parsed.words]);
+    setCustomRelations((current) => [...current, ...parsed.relations]);
+    addWordsToList(parsed.words.map((item) => item.id));
+    if (parsed.words[0]) {
+      setSelectedWordId(parsed.words[0].id);
     }
     setImportText("");
   }
@@ -422,15 +549,15 @@ export default function WordSpacePrototype() {
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, ease: "easeOut" }}
-        className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[320px_minmax(0,1fr)]"
+        className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[360px_minmax(0,1fr)]"
       >
         <Card className="border-white/70 bg-white/70">
           <CardHeader className="space-y-4">
-            <Badge className="w-fit">Nexora Prototype</Badge>
+            <Badge className="w-fit">Nexora Phase 2</Badge>
             <div className="space-y-2">
               <CardTitle className="text-2xl">Nexora 词图记忆空间</CardTitle>
               <p className="text-sm leading-6 text-stone-600">
-                用图谱组织词义、联想和复习路径，让单词记忆从线性背诵变成空间化探索。
+                现在词和词之间已经不只是简单字符串关系，而是带类型、强度和来源的关系边。
               </p>
             </div>
             <div className="relative">
@@ -528,7 +655,8 @@ export default function WordSpacePrototype() {
               <CardHeader className="space-y-2">
                 <CardTitle className="text-base">导入自定义词汇</CardTitle>
                 <p className="text-xs leading-5 text-stone-500">
-                  每行一个词，格式：`word | 中文1,中文2 | topic | example | memoryHint`
+                  每行一个词，格式：`word | 中文1,中文2 | topic | example | memoryHint |
+                  phonetic`
                 </p>
               </CardHeader>
               <CardContent className="space-y-3 pt-0">
@@ -536,9 +664,7 @@ export default function WordSpacePrototype() {
                   value={importText}
                   onChange={(event) => setImportText(event.target.value)}
                   className="min-h-32 w-full rounded-2xl border border-stone-300 bg-white/80 px-4 py-3 text-sm outline-none transition focus:border-amber-500 focus:ring-2 focus:ring-amber-500/20"
-                  placeholder={
-                    "resilient | 有韧性的, 能恢复的 | emotion | She remained resilient after failure. | 把它想成会弹回来的橡皮球"
-                  }
+                  placeholder="resilient | 有韧性的, 能恢复的 | emotion | She remained resilient after failure. | 把它想成会弹回来的橡皮球 | /rɪˈzɪliənt/"
                 />
                 <Button onClick={importCustomWords}>
                   <Upload className="mr-2 size-4" />
@@ -578,7 +704,21 @@ export default function WordSpacePrototype() {
                     <CardHeader className="space-y-3">
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="text-2xl font-semibold">{selectedWord.word}</div>
+                          <div className="flex items-center gap-3">
+                            <div className="text-2xl font-semibold">{selectedWord.word}</div>
+                            <Button
+                              className="h-9 w-9 rounded-full px-0"
+                              variant="outline"
+                              onClick={() => speakWord(selectedWord)}
+                            >
+                              <Volume2 className="size-4" />
+                            </Button>
+                          </div>
+                          {selectedWord.phonetic ? (
+                            <div className="mt-2 text-sm text-stone-400">
+                              {selectedWord.phonetic}
+                            </div>
+                          ) : null}
                           <div className="mt-2 text-sm text-stone-300">
                             {selectedWord.meanings.join(" / ")}
                           </div>
@@ -604,15 +744,35 @@ export default function WordSpacePrototype() {
                         </div>
                         <p>{selectedWord.memoryHint}</p>
                       </div>
-                      <div className="flex flex-wrap gap-2">
-                        {selectedWord.related.map((item) => (
-                          <Badge
-                            key={item}
-                            className="bg-white/10 text-white/90"
-                          >
-                            {item}
-                          </Badge>
-                        ))}
+                      <div>
+                        <div className="mb-2 text-xs uppercase tracking-[0.16em] text-stone-400">
+                          Related Words
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {relatedWordItems.map((item) => (
+                            <Badge
+                              key={item.id}
+                              className="bg-white/10 text-white/90"
+                            >
+                              {item.word}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="mb-2 text-xs uppercase tracking-[0.16em] text-stone-400">
+                          Relations
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {selectedRelations.map((relation) => (
+                            <Badge
+                              key={relation.id}
+                              className="bg-amber-500/20 text-amber-100"
+                            >
+                              {relation.type} {Math.round(relation.strength * 100)}%
+                            </Badge>
+                          ))}
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button
@@ -660,7 +820,7 @@ export default function WordSpacePrototype() {
                 Nexora Graph
               </CardTitle>
               <p className="mt-2 text-sm text-stone-600">
-                点击节点查看词义、例句和记忆提示。当前词单展示 {filteredWords.length} 个词。
+                当前词单展示 {filteredWords.length} 个词，{visibleRelations.length} 条关系边。
               </p>
             </div>
             <Tabs
@@ -678,7 +838,7 @@ export default function WordSpacePrototype() {
           <CardContent className="p-0">
             <Tabs defaultValue="graph" value={activeTab} onValueChange={setActiveTab}>
               <TabsContent value="graph" className="m-0">
-                <div className="h-[720px] bg-[linear-gradient(135deg,rgba(255,251,235,0.92),rgba(255,255,255,0.75))]">
+                <div className="h-[760px] bg-[linear-gradient(135deg,rgba(255,251,235,0.92),rgba(255,255,255,0.75))]">
                   <ReactFlow
                     fitView
                     nodes={nodes}
@@ -715,7 +875,12 @@ export default function WordSpacePrototype() {
                       className="rounded-[24px] border border-stone-200 bg-white p-5 text-left transition hover:-translate-y-0.5 hover:shadow-md"
                     >
                       <div className="flex items-center justify-between gap-3">
-                        <div className="text-lg font-semibold">{item.word}</div>
+                        <div>
+                          <div className="text-lg font-semibold">{item.word}</div>
+                          {item.phonetic ? (
+                            <div className="text-xs text-stone-400">{item.phonetic}</div>
+                          ) : null}
+                        </div>
                         <Badge>
                           {memoryStatusMap[item.id] === "remembered"
                             ? "已记住"
@@ -726,6 +891,19 @@ export default function WordSpacePrototype() {
                       </div>
                       <div className="mt-2 text-sm text-stone-600">
                         {item.meanings.join(" / ")}
+                      </div>
+                      <div className="mt-3 flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          className="h-9 px-3"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            speakWord(item);
+                          }}
+                        >
+                          <Volume2 className="mr-2 size-4" />
+                          发音
+                        </Button>
                       </div>
                       <div className="mt-4 text-xs uppercase tracking-[0.16em] text-stone-400">
                         {topicLabelMap[item.topic]}

@@ -1,9 +1,10 @@
-import type { WordItem } from "@/types/word";
+import type { WordItem, WordRelation } from "@/types/word";
 
 export const words: WordItem[] = [
   {
     id: "delay",
     word: "delay",
+    phonetic: "/dɪˈleɪ/",
     meanings: ["延迟", "耽搁"],
     topic: "time_process",
     example: "The flight was delayed because of heavy rain.",
@@ -17,6 +18,7 @@ export const words: WordItem[] = [
   {
     id: "progress",
     word: "progress",
+    phonetic: "/ˈprɑːɡres/",
     meanings: ["进步", "进展"],
     topic: "time_process",
     example: "We have made progress in the project.",
@@ -29,6 +31,7 @@ export const words: WordItem[] = [
   {
     id: "advance",
     word: "advance",
+    phonetic: "/ədˈvæns/",
     meanings: ["前进", "推进", "预先"],
     topic: "time_process",
     example: "The team decided to advance the deadline by two days.",
@@ -42,6 +45,7 @@ export const words: WordItem[] = [
   {
     id: "urgent",
     word: "urgent",
+    phonetic: "/ˈɜːrdʒənt/",
     meanings: ["紧急的", "急迫的"],
     topic: "society",
     example: "This is an urgent message for all students.",
@@ -54,6 +58,7 @@ export const words: WordItem[] = [
   {
     id: "goal",
     word: "goal",
+    phonetic: "/ɡoʊl/",
     meanings: ["目标", "目的"],
     topic: "education",
     example: "Setting a clear goal helps us study more efficiently.",
@@ -66,6 +71,7 @@ export const words: WordItem[] = [
   {
     id: "process",
     word: "process",
+    phonetic: "/ˈprɑːses/",
     meanings: ["过程", "加工", "处理"],
     topic: "technology",
     example: "Learning is a gradual process rather than a single event.",
@@ -74,5 +80,64 @@ export const words: WordItem[] = [
     memoryHint: "它像一条中间道路，连接 progress 和 goal。",
     x: 600,
     y: 330,
+  },
+];
+
+export const seedRelations: WordRelation[] = [
+  {
+    id: "delay-progress-semantic",
+    sourceWordId: "delay",
+    targetWordId: "progress",
+    type: "semantic",
+    strength: 0.78,
+    source: "seed",
+  },
+  {
+    id: "delay-advance-opposite",
+    sourceWordId: "delay",
+    targetWordId: "advance",
+    type: "opposite",
+    strength: 0.96,
+    source: "seed",
+  },
+  {
+    id: "progress-advance-topic",
+    sourceWordId: "progress",
+    targetWordId: "advance",
+    type: "topic",
+    strength: 0.84,
+    source: "seed",
+  },
+  {
+    id: "progress-process-semantic",
+    sourceWordId: "progress",
+    targetWordId: "process",
+    type: "semantic",
+    strength: 0.74,
+    source: "seed",
+  },
+  {
+    id: "goal-process-topic",
+    sourceWordId: "goal",
+    targetWordId: "process",
+    type: "topic",
+    strength: 0.66,
+    source: "seed",
+  },
+  {
+    id: "urgent-goal-semantic",
+    sourceWordId: "urgent",
+    targetWordId: "goal",
+    type: "semantic",
+    strength: 0.61,
+    source: "seed",
+  },
+  {
+    id: "delay-urgent-semantic",
+    sourceWordId: "delay",
+    targetWordId: "urgent",
+    type: "semantic",
+    strength: 0.58,
+    source: "seed",
   },
 ];
