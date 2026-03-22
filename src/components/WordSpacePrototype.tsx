@@ -20,6 +20,7 @@ import {
   Volume2,
   X,
 } from "lucide-react";
+import { cet4Catalog } from "@/data/cet4_catalog";
 import { seedRelations, words } from "@/data/cet4_core";
 import type { Topic, WordItem, WordRelation } from "@/types/word";
 import { Badge } from "@/components/ui/badge";
@@ -44,6 +45,14 @@ const topicColorMap: Record<Topic, string> = {
   technology: "#7c3aed",
 };
 
+const topicOrder: Topic[] = [
+  "education",
+  "time_process",
+  "society",
+  "technology",
+  "emotion",
+];
+
 type MemoryStatus = "new" | "learning" | "remembered";
 
 type UserList = {
@@ -60,7 +69,7 @@ type StoredState = {
   statuses: Record<string, MemoryStatus>;
 };
 
-const STORAGE_KEY = "nexora-phase2-state";
+const STORAGE_KEY = "nexora-phase3-state";
 const defaultListId = "my-core-list";
 const defaultLists: UserList[] = [
   {
@@ -136,10 +145,7 @@ function scoreRelation(source: WordItem, target: WordItem) {
     score += 1;
   }
 
-  return {
-    score,
-    relationType,
-  };
+  return { score, relationType };
 }
 
 function createAutoRelations(newWord: WordItem, candidates: WordItem[]) {
@@ -172,7 +178,7 @@ function parseImportedWords(rawText: string, existingWords: WordItem[], listId: 
   const nextWords: WordItem[] = [];
   const nextRelations: WordRelation[] = [];
 
-  lines.forEach((line, index) => {
+  lines.forEach((line) => {
     const [wordPart, meaningsPart, topicPart, examplePart, hintPart, phoneticPart] =
       line.split("|").map((part) => part.trim());
 
@@ -196,8 +202,9 @@ function parseImportedWords(rawText: string, existingWords: WordItem[], listId: 
       related: [],
       difficulty: "CET4",
       memoryHint: hintPart || `把 ${wordPart} 放进你自己的记忆路径里复习。`,
-      x: 140 + (index % 3) * 180,
-      y: 120 + Math.floor(index / 3) * 140,
+      x: 0,
+      y: 0,
+      audioUrl: undefined,
     };
 
     nextWords.push(draft);
@@ -206,10 +213,7 @@ function parseImportedWords(rawText: string, existingWords: WordItem[], listId: 
     );
   });
 
-  return {
-    words: nextWords,
-    relations: nextRelations,
-  };
+  return { words: nextWords, relations: nextRelations };
 }
 
 function readStoredState(): StoredState | null {
@@ -247,7 +251,14 @@ function buildRelationEdges(items: WordItem[], relations: WordRelation[]): Edge[
         width: 18,
         height: 18,
       },
-      label: `${relation.type} ${Math.round(relation.strength * 100)}%`,
+      label:
+        relation.type === "opposite"
+          ? "反义"
+          : relation.type === "topic"
+            ? "同主题"
+            : relation.type === "imported"
+              ? "推荐"
+              : "相关",
       labelStyle: {
         fill: "#78716c",
         fontSize: 10,
@@ -259,13 +270,23 @@ function buildRelationEdges(items: WordItem[], relations: WordRelation[]): Edge[
             : relation.type === "topic"
               ? "#2563eb"
               : "#b45309",
-        strokeWidth: 1 + relation.strength,
+        strokeWidth: 1.2 + relation.strength,
       },
     }));
 }
 
-function speakWord(word: WordItem) {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+function playWordAudio(word: WordItem) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  if (word.audioUrl) {
+    const audio = new Audio(word.audioUrl);
+    void audio.play().catch(() => {});
+    return;
+  }
+
+  if (!("speechSynthesis" in window)) {
     return;
   }
 
@@ -295,7 +316,7 @@ export default function WordSpacePrototype() {
   );
   const [query, setQuery] = useState("");
   const [activeTopic, setActiveTopic] = useState<"all" | Topic>("all");
-  const [activeTab, setActiveTab] = useState("graph");
+  const [activeTab, setActiveTab] = useState("focus");
   const [selectedWordId, setSelectedWordId] = useState<string>(words[0]?.id ?? "");
   const [listName, setListName] = useState("");
   const [importText, setImportText] = useState("");
@@ -321,11 +342,8 @@ export default function WordSpacePrototype() {
 
   const activeList =
     userLists.find((item) => item.id === activeListId) ??
-    userLists[0] ?? {
-      id: defaultListId,
-      name: "我的核心词单",
-      wordIds: words.map((item) => item.id),
-    };
+    userLists[0] ??
+    defaultLists[0];
 
   const activeListWordIds = useMemo(
     () => new Set(activeList.wordIds),
@@ -361,150 +379,190 @@ export default function WordSpacePrototype() {
     });
   }, [activeListWords, activeTopic, query]);
 
-  const libraryMatches = useMemo(() => {
-    const keyword = libraryQuery.trim().toLowerCase();
+  const atlasWords = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
 
-    return words.filter((item) => {
-      if (activeListWordIds.has(item.id)) {
-        return false;
-      }
-
-      if (!keyword) {
-        return true;
-      }
-
-      return (
+    return cet4Catalog.filter((item) => {
+      const matchesTopic = activeTopic === "all" || item.topic === activeTopic;
+      const matchesQuery =
+        keyword.length === 0 ||
         item.word.toLowerCase().includes(keyword) ||
-        item.meanings.some((meaning) => meaning.includes(keyword))
-      );
+        item.meanings.some((meaning) => meaning.includes(keyword));
+
+      return matchesTopic && matchesQuery;
     });
-  }, [activeListWordIds, libraryQuery]);
-
-  const visibleWordIds = useMemo(
-    () => new Set(filteredWords.map((item) => item.id)),
-    [filteredWords],
-  );
-
-  const visibleRelations = useMemo(
-    () =>
-      activeListRelations.filter(
-        (relation) =>
-          visibleWordIds.has(relation.sourceWordId) &&
-          visibleWordIds.has(relation.targetWordId),
-      ),
-    [activeListRelations, visibleWordIds],
-  );
-
-  const nodes: Node[] = useMemo(
-    () =>
-      filteredWords.map((item) => ({
-        id: item.id,
-        position: { x: item.x, y: item.y },
-        data: {
-          label: (
-            <button
-              type="button"
-              onClick={() => setSelectedWordId(item.id)}
-              className="min-w-[150px] rounded-2xl border border-white/70 bg-white/90 px-4 py-3 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
-            >
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold text-stone-900">{item.word}</div>
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    speakWord(item);
-                  }}
-                  className="rounded-full border border-stone-200 p-1 text-stone-500 transition hover:bg-stone-100"
-                  aria-label={`Speak ${item.word}`}
-                >
-                  <Volume2 className="size-3.5" />
-                </button>
-              </div>
-              {item.phonetic ? (
-                <div className="mt-1 text-[11px] text-stone-400">{item.phonetic}</div>
-              ) : null}
-              <div className="mt-1 text-xs text-stone-500">
-                {item.meanings.join(" / ")}
-              </div>
-            </button>
-          ),
-        },
-        draggable: false,
-        selectable: true,
-        sourcePosition: "right",
-        targetPosition: "left",
-        style: {
-          background: "transparent",
-          border: "none",
-          width: 170,
-        },
-      })),
-    [filteredWords],
-  );
-
-  const edges = useMemo(
-    () => buildRelationEdges(filteredWords, visibleRelations),
-    [filteredWords, visibleRelations],
-  );
+  }, [activeTopic, query]);
 
   const selectedWord =
     filteredWords.find((item) => item.id === selectedWordId) ??
     activeListWords.find((item) => item.id === selectedWordId) ??
+    cet4Catalog.find((item) => item.id === selectedWordId) ??
     filteredWords[0] ??
-    activeListWords[0];
+    activeListWords[0] ??
+    cet4Catalog[0];
+
+  const selectedInList = selectedWord ? activeListWordIds.has(selectedWord.id) : false;
 
   const selectedRelations = useMemo(() => {
+    if (!selectedWord || !selectedInList) {
+      return [];
+    }
+
+    return activeListRelations
+      .filter(
+        (relation) =>
+          relation.sourceWordId === selectedWord.id ||
+          relation.targetWordId === selectedWord.id,
+      )
+      .sort((left, right) => right.strength - left.strength)
+      .slice(0, 6);
+  }, [activeListRelations, selectedInList, selectedWord]);
+
+  const focusWords = useMemo(() => {
     if (!selectedWord) {
       return [];
     }
 
-    return activeListRelations.filter(
-      (relation) =>
-        relation.sourceWordId === selectedWord.id ||
-        relation.targetWordId === selectedWord.id,
-    );
-  }, [activeListRelations, selectedWord]);
+    if (!selectedInList) {
+      return [selectedWord];
+    }
 
-  const relatedWordItems = useMemo(() => {
+    const ids = new Set([selectedWord.id]);
+    selectedRelations.forEach((relation) => {
+      ids.add(relation.sourceWordId);
+      ids.add(relation.targetWordId);
+    });
+
+    return allWords.filter((item) => ids.has(item.id));
+  }, [allWords, selectedInList, selectedRelations, selectedWord]);
+
+  const focusNodes: Node[] = useMemo(() => {
     if (!selectedWord) {
       return [];
     }
 
-    return selectedRelations
-      .map((relation) => {
-        const otherId =
-          relation.sourceWordId === selectedWord.id
-            ? relation.targetWordId
-            : relation.sourceWordId;
-        return allWords.find((item) => item.id === otherId);
-      })
-      .filter((item): item is WordItem => Boolean(item));
-  }, [allWords, selectedRelations, selectedWord]);
+    const neighbors = focusWords.filter((item) => item.id !== selectedWord.id);
+    const centerNode: Node = {
+      id: selectedWord.id,
+      position: { x: 380, y: 250 },
+      data: {
+        label: (
+          <div className="min-w-[210px] rounded-[28px] border-2 border-amber-300 bg-amber-50 px-5 py-4 text-left shadow-lg">
+            <div className="text-lg font-semibold text-stone-900">{selectedWord.word}</div>
+            {selectedWord.phonetic ? (
+              <div className="mt-1 text-xs text-stone-500">{selectedWord.phonetic}</div>
+            ) : null}
+            <div className="mt-2 text-sm text-stone-600">
+              {selectedWord.meanings.join(" / ")}
+            </div>
+          </div>
+        ),
+      },
+      draggable: false,
+      selectable: true,
+      style: { background: "transparent", border: "none", width: 220 },
+    };
+
+    const orbitNodes = neighbors.map((item, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(neighbors.length, 1);
+      const radius = 220;
+
+      return {
+        id: item.id,
+        position: {
+          x: 380 + Math.cos(angle) * radius,
+          y: 250 + Math.sin(angle) * radius,
+        },
+        data: {
+          label: (
+            <div className="min-w-[150px] rounded-2xl border border-white/70 bg-white/95 px-4 py-3 text-left shadow-sm">
+              <div className="text-sm font-semibold text-stone-900">{item.word}</div>
+              <div className="mt-1 text-xs text-stone-500">
+                {item.meanings.join(" / ")}
+              </div>
+            </div>
+          ),
+        },
+        draggable: false,
+        selectable: true,
+        style: { background: "transparent", border: "none", width: 170 },
+      } satisfies Node;
+    });
+
+    return [centerNode, ...orbitNodes];
+  }, [focusWords, selectedWord]);
+
+  const atlasNodes: Node[] = useMemo(() => {
+    const topicBuckets = new Map<Topic, WordItem[]>();
+    topicOrder.forEach((topic) => topicBuckets.set(topic, []));
+
+    atlasWords.forEach((item) => {
+      topicBuckets.get(item.topic)?.push(item);
+    });
+
+    return topicOrder.flatMap((topic, topicIndex) => {
+      const items = topicBuckets.get(topic) ?? [];
+      return items.map((item, index) => {
+        const column = index % 4;
+        const row = Math.floor(index / 4);
+        return {
+          id: item.id,
+          position: {
+            x: 100 + topicIndex * 290 + column * 64,
+            y: 80 + row * 34,
+          },
+          data: {
+            label: (
+              <div
+                className={`rounded-full px-3 py-1 text-[10px] font-medium shadow-sm ${
+                  selectedWordId === item.id
+                    ? "border border-amber-400 bg-amber-100 text-amber-900"
+                    : "border border-white/80 bg-white/92 text-stone-700"
+                }`}
+              >
+                {item.word}
+              </div>
+            ),
+          },
+          draggable: false,
+          selectable: true,
+          style: { background: "transparent", border: "none", width: 70 },
+        } satisfies Node;
+      });
+    });
+  }, [atlasWords, selectedWordId]);
+
+  const catalogMatches = useMemo(() => {
+    const keyword = libraryQuery.trim().toLowerCase();
+    if (!keyword) {
+      return [];
+    }
+
+    return cet4Catalog
+      .filter(
+        (item) =>
+          item.word.toLowerCase().includes(keyword) ||
+          item.meanings.some((meaning) => meaning.includes(keyword)),
+      )
+      .slice(0, 12);
+  }, [libraryQuery]);
 
   const rememberedCount = activeList.wordIds.filter(
     (id) => memoryStatusMap[id] === "remembered",
   ).length;
-
   const learningCount = activeList.wordIds.filter(
     (id) => memoryStatusMap[id] === "learning",
   ).length;
 
   function updateWordStatus(wordId: string, nextStatus: MemoryStatus) {
-    setMemoryStatusMap((current) => ({
-      ...current,
-      [wordId]: nextStatus,
-    }));
+    setMemoryStatusMap((current) => ({ ...current, [wordId]: nextStatus }));
   }
 
   function addWordsToList(wordIds: string[]) {
     setUserLists((current) =>
       current.map((item) =>
         item.id === activeListId
-          ? {
-              ...item,
-              wordIds: Array.from(new Set([...item.wordIds, ...wordIds])),
-            }
+          ? { ...item, wordIds: Array.from(new Set([...item.wordIds, ...wordIds])) }
           : item,
       ),
     );
@@ -517,13 +575,7 @@ export default function WordSpacePrototype() {
     }
 
     const id = createWordId(name, new Set(userLists.map((item) => item.id)));
-    const nextList: UserList = {
-      id,
-      name,
-      wordIds: [],
-    };
-
-    setUserLists((current) => [...current, nextList]);
+    setUserLists((current) => [...current, { id, name, wordIds: [] }]);
     setActiveListId(id);
     setListName("");
   }
@@ -537,10 +589,26 @@ export default function WordSpacePrototype() {
     setCustomWords((current) => [...current, ...parsed.words]);
     setCustomRelations((current) => [...current, ...parsed.relations]);
     addWordsToList(parsed.words.map((item) => item.id));
-    if (parsed.words[0]) {
-      setSelectedWordId(parsed.words[0].id);
-    }
+    setSelectedWordId(parsed.words[0].id);
     setImportText("");
+  }
+
+  function addCatalogWord(word: WordItem) {
+    const existing = allWords.find(
+      (item) => item.word.toLowerCase() === word.word.toLowerCase(),
+    );
+
+    if (existing) {
+      addWordsToList([existing.id]);
+      setSelectedWordId(existing.id);
+      return;
+    }
+
+    const relations = createAutoRelations(word, allWords);
+    setCustomWords((current) => [...current, word]);
+    setCustomRelations((current) => [...current, ...relations]);
+    addWordsToList([word.id]);
+    setSelectedWordId(word.id);
   }
 
   return (
@@ -549,15 +617,15 @@ export default function WordSpacePrototype() {
         initial={{ opacity: 0, y: 18 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.45, ease: "easeOut" }}
-        className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[360px_minmax(0,1fr)]"
+        className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[380px_minmax(0,1fr)]"
       >
         <Card className="border-white/70 bg-white/70">
           <CardHeader className="space-y-4">
-            <Badge className="w-fit">Nexora Phase 2</Badge>
+            <Badge className="w-fit">Nexora CET4 Atlas</Badge>
             <div className="space-y-2">
-              <CardTitle className="text-2xl">Nexora 词图记忆空间</CardTitle>
+              <CardTitle className="text-2xl">Nexora 词汇学习地图</CardTitle>
               <p className="text-sm leading-6 text-stone-600">
-                现在词和词之间已经不只是简单字符串关系，而是带类型、强度和来源的关系边。
+                CET4 词库已经按语义主题分类导入。你可以搜索、加入词单，再在主图里看完整分布。
               </p>
             </div>
             <div className="relative">
@@ -566,7 +634,7 @@ export default function WordSpacePrototype() {
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 className="pl-10"
-                placeholder="搜索单词或中文释义"
+                placeholder="搜索主图或当前词单里的单词 / 释义"
               />
             </div>
           </CardHeader>
@@ -604,9 +672,7 @@ export default function WordSpacePrototype() {
                     <div className="text-xs text-stone-500">总词数</div>
                   </div>
                   <div className="rounded-2xl bg-amber-50 p-3">
-                    <div className="text-lg font-semibold text-amber-700">
-                      {learningCount}
-                    </div>
+                    <div className="text-lg font-semibold text-amber-700">{learningCount}</div>
                     <div className="text-xs text-stone-500">学习中</div>
                   </div>
                   <div className="rounded-2xl bg-emerald-50 p-3">
@@ -621,15 +687,15 @@ export default function WordSpacePrototype() {
 
             <Card className="bg-white/80">
               <CardHeader className="space-y-3">
-                <CardTitle className="text-base">从词库添加</CardTitle>
+                <CardTitle className="text-base">搜索 CET4 词库</CardTitle>
                 <Input
                   value={libraryQuery}
                   onChange={(event) => setLibraryQuery(event.target.value)}
-                  placeholder="搜索内置词库后加入当前词单"
+                  placeholder="输入英文或中文释义，加入当前词单"
                 />
               </CardHeader>
               <CardContent className="space-y-2 pt-0">
-                {libraryMatches.slice(0, 5).map((item) => (
+                {catalogMatches.map((item) => (
                   <div
                     key={item.id}
                     className="flex items-center justify-between gap-3 rounded-2xl border border-stone-200 bg-white p-3"
@@ -640,12 +706,12 @@ export default function WordSpacePrototype() {
                         {item.meanings.join(" / ")}
                       </div>
                     </div>
-                    <Button onClick={() => addWordsToList([item.id])}>添加</Button>
+                    <Button onClick={() => addCatalogWord(item)}>加入词单</Button>
                   </div>
                 ))}
-                {libraryMatches.length === 0 ? (
+                {libraryQuery && catalogMatches.length === 0 ? (
                   <div className="rounded-2xl border border-dashed border-stone-200 p-3 text-sm text-stone-500">
-                    当前没有可添加的内置词。
+                    没有找到可加入的 CET4 词。
                   </div>
                 ) : null}
               </CardContent>
@@ -655,8 +721,7 @@ export default function WordSpacePrototype() {
               <CardHeader className="space-y-2">
                 <CardTitle className="text-base">导入自定义词汇</CardTitle>
                 <p className="text-xs leading-5 text-stone-500">
-                  每行一个词，格式：`word | 中文1,中文2 | topic | example | memoryHint |
-                  phonetic`
+                  每行一个词，格式：`word | 中文1,中文2 | topic | example | memoryHint | phonetic`
                 </p>
               </CardHeader>
               <CardContent className="space-y-3 pt-0">
@@ -709,7 +774,7 @@ export default function WordSpacePrototype() {
                             <Button
                               className="h-9 w-9 rounded-full px-0"
                               variant="outline"
-                              onClick={() => speakWord(selectedWord)}
+                              onClick={() => playWordAudio(selectedWord)}
                             >
                               <Volume2 className="size-4" />
                             </Button>
@@ -734,7 +799,7 @@ export default function WordSpacePrototype() {
                     <CardContent className="space-y-4 text-sm leading-6 text-stone-200">
                       <div>
                         <div className="mb-1 text-xs uppercase tracking-[0.16em] text-stone-400">
-                          Example
+                          Example / Definition
                         </div>
                         <p>{selectedWord.example}</p>
                       </div>
@@ -744,36 +809,11 @@ export default function WordSpacePrototype() {
                         </div>
                         <p>{selectedWord.memoryHint}</p>
                       </div>
-                      <div>
-                        <div className="mb-2 text-xs uppercase tracking-[0.16em] text-stone-400">
-                          Related Words
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {relatedWordItems.map((item) => (
-                            <Badge
-                              key={item.id}
-                              className="bg-white/10 text-white/90"
-                            >
-                              {item.word}
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="mb-2 text-xs uppercase tracking-[0.16em] text-stone-400">
-                          Relations
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {selectedRelations.map((relation) => (
-                            <Badge
-                              key={relation.id}
-                              className="bg-amber-500/20 text-amber-100"
-                            >
-                              {relation.type} {Math.round(relation.strength * 100)}%
-                            </Badge>
-                          ))}
-                        </div>
-                      </div>
+                      {!selectedInList ? (
+                        <Button onClick={() => addCatalogWord(selectedWord)}>
+                          加入当前词单
+                        </Button>
+                      ) : null}
                       <div className="flex flex-wrap gap-2">
                         <Button
                           variant={
@@ -817,46 +857,68 @@ export default function WordSpacePrototype() {
             <div>
               <CardTitle className="flex items-center gap-2">
                 <Sparkles className="size-5 text-amber-600" />
-                Nexora Graph
+                CET4 Main Graph
               </CardTitle>
               <p className="mt-2 text-sm text-stone-600">
-                当前词单展示 {filteredWords.length} 个词，{visibleRelations.length} 条关系边。
+                `学习地图`聚焦当前词，`CET4 总图`显示完整四级词库分布，`列表`看当前词单。
               </p>
             </div>
             <Tabs
-              defaultValue="graph"
+              defaultValue="focus"
               value={activeTab}
               onValueChange={setActiveTab}
               className="flex-shrink-0"
             >
               <TabsList>
-                <TabsTrigger value="graph">图谱</TabsTrigger>
+                <TabsTrigger value="focus">学习地图</TabsTrigger>
+                <TabsTrigger value="atlas">CET4 总图</TabsTrigger>
                 <TabsTrigger value="list">列表</TabsTrigger>
               </TabsList>
             </Tabs>
           </CardHeader>
           <CardContent className="p-0">
-            <Tabs defaultValue="graph" value={activeTab} onValueChange={setActiveTab}>
-              <TabsContent value="graph" className="m-0">
+            <Tabs defaultValue="focus" value={activeTab} onValueChange={setActiveTab}>
+              <TabsContent value="focus" className="m-0">
                 <div className="h-[760px] bg-[linear-gradient(135deg,rgba(255,251,235,0.92),rgba(255,255,255,0.75))]">
                   <ReactFlow
                     fitView
-                    nodes={nodes}
-                    edges={edges}
+                    nodes={focusNodes}
+                    edges={buildRelationEdges(focusWords, selectedRelations)}
                     onNodeClick={(_, node) => setSelectedWordId(node.id)}
                     proOptions={{ hideAttribution: true }}
-                    defaultEdgeOptions={{
-                      type: "smoothstep",
-                    }}
+                    defaultEdgeOptions={{ type: "smoothstep" }}
+                    nodesDraggable={false}
                   >
                     <MiniMap
                       pannable
                       zoomable
-                      style={{
-                        backgroundColor: "rgba(255,255,255,0.75)",
-                      }}
+                      style={{ backgroundColor: "rgba(255,255,255,0.75)" }}
                       nodeColor={(node) => {
-                        const item = filteredWords.find((word) => word.id === node.id);
+                        const item = focusWords.find((word) => word.id === node.id);
+                        return item ? topicColorMap[item.topic] : "#a8a29e";
+                      }}
+                    />
+                    <Controls />
+                    <Background color="#d6d3d1" gap={18} size={1.2} />
+                  </ReactFlow>
+                </div>
+              </TabsContent>
+              <TabsContent value="atlas" className="m-0">
+                <div className="h-[760px] bg-[linear-gradient(135deg,rgba(255,251,235,0.92),rgba(255,255,255,0.75))]">
+                  <ReactFlow
+                    fitView
+                    nodes={atlasNodes}
+                    edges={[]}
+                    onNodeClick={(_, node) => setSelectedWordId(node.id)}
+                    proOptions={{ hideAttribution: true }}
+                    nodesDraggable={false}
+                  >
+                    <MiniMap
+                      pannable
+                      zoomable
+                      style={{ backgroundColor: "rgba(255,255,255,0.75)" }}
+                      nodeColor={(node) => {
+                        const item = atlasWords.find((word) => word.id === node.id);
                         return item ? topicColorMap[item.topic] : "#a8a29e";
                       }}
                     />
@@ -898,7 +960,7 @@ export default function WordSpacePrototype() {
                           className="h-9 px-3"
                           onClick={(event) => {
                             event.stopPropagation();
-                            speakWord(item);
+                            playWordAudio(item);
                           }}
                         >
                           <Volume2 className="mr-2 size-4" />
